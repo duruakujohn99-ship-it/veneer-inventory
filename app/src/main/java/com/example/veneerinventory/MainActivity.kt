@@ -3,11 +3,16 @@ package com.example.veneerinventory
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -18,8 +23,11 @@ import com.google.mlkit.vision.common.InputImage
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
+import kotlin.math.round
 
 data class Row(
+    val id: Long,
+    val pallet: Int,
     val date: String,
     val supplier: String,
     val code: String,
@@ -42,15 +50,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var areaText: TextView
     private lateinit var status: TextView
     private lateinit var summary: TextView
+    private lateinit var palletTabs: LinearLayout
+    private lateinit var recordsView: LinearLayout
+    private lateinit var saveButton: Button
 
     private val rows = mutableListOf<Row>()
+    private val pallets = sortedSetOf(1)
+    private var currentPallet = 1
+
     private val executor = Executors.newSingleThreadExecutor()
+
     private val prefs by lazy {
         getSharedPreferences("inventory", MODE_PRIVATE)
     }
 
     private var last = ""
     private var lastAt = 0L
+    private var cameraStarted = false
 
     private val permission =
         registerForActivityResult(
@@ -62,12 +78,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        ui()
         load()
-        updateSummary()
+        ui()
+        refresh()
 
-        if (ContextCompat.checkSelfPermission(
+        if (
+            ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.CAMERA
             ) == PackageManager.PERMISSION_GRANTED
@@ -81,24 +97,22 @@ class MainActivity : AppCompatActivity() {
     private fun ui() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 10, 16, 16)
+            setPadding(dp(12), dp(10), dp(12), dp(16))
         }
 
         root.addView(TextView(this).apply {
             text = "VENEER INVENTORY"
-            textSize = 23f
+            textSize = 24f
         })
 
         preview = PreviewView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                -1,
-                dp(180)
-            )
+            layoutParams = LinearLayout.LayoutParams(-1, dp(180))
         }
         root.addView(preview)
 
         status = TextView(this).apply {
             text = "Point camera at barcode."
+            textSize = 15f
         }
         root.addView(status)
 
@@ -118,22 +132,57 @@ class MainActivity : AppCompatActivity() {
         root.addView(areaText)
 
         root.addView(Button(this).apply {
-            text = "Calculate area"
-            setOnClickListener { calc() }
+            text = "CALCULATE AREA"
+            setOnClickListener { calculate() }
+        })
+
+        palletTabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        root.addView(TextView(this).apply {
+            text = "PALLETS"
+            textSize = 18f
+        })
+        root.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = true
+            addView(palletTabs)
         })
 
         root.addView(Button(this).apply {
-            text = "Save inventory record"
+            text = "＋ ADD NEW PALLET"
+            setOnClickListener { addPallet() }
+        })
+
+        saveButton = Button(this).apply {
             setOnClickListener { save() }
+        }
+        root.addView(saveButton)
+
+        root.addView(Button(this).apply {
+            text = "DELETE CURRENT PALLET"
+            setOnClickListener { deletePallet() }
         })
 
         root.addView(Button(this).apply {
-            text = "Export CSV for Excel"
+            text = "EXPORT ALL PALLETS TO CSV"
             setOnClickListener { export() }
         })
 
-        summary = TextView(this)
+        summary = TextView(this).apply {
+            textSize = 16f
+        }
         root.addView(summary)
+
+        root.addView(TextView(this).apply {
+            text = "TALLY SHEET — TAP A RECORD TO VIEW OR EDIT"
+            textSize = 18f
+        })
+
+        recordsView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        root.addView(recordsView)
 
         setContentView(ScrollView(this).apply {
             addView(root)
@@ -143,14 +192,25 @@ class MainActivity : AppCompatActivity() {
     private fun dp(n: Int): Int =
         (n * resources.displayMetrics.density).toInt()
 
-    private fun field(hintText: String): EditText {
-        return EditText(this).apply {
+    private fun field(hintText: String): EditText =
+        EditText(this).apply {
             hint = hintText
             setSingleLine(true)
         }
-    }
+
+    private fun rounded(value: Double): Double =
+        round(value * 100.0) / 100.0
+
+    private fun areaValue(
+        length: Double,
+        width: Double,
+        count: Int
+    ): Double = rounded(length * width * count / 10000.0)
 
     private fun camera() {
+        if (cameraStarted) return
+        cameraStarted = true
+
         val future = ProcessCameraProvider.getInstance(this)
 
         future.addListener({
@@ -172,13 +232,13 @@ class MainActivity : AppCompatActivity() {
                 val scanner = BarcodeScanning.getClient()
 
                 analysis.setAnalyzer(executor) { proxy ->
-                    val image = proxy.image
+                    val mediaImage = proxy.image
 
-                    if (image == null) {
+                    if (mediaImage == null) {
                         proxy.close()
                     } else {
                         val input = InputImage.fromMediaImage(
-                            image,
+                            mediaImage,
                             proxy.imageInfo.rotationDegrees
                         )
 
@@ -188,19 +248,18 @@ class MainActivity : AppCompatActivity() {
                                     !it.rawValue.isNullOrBlank()
                                 }?.rawValue
 
+                                val now = System.currentTimeMillis()
+
                                 if (
                                     raw != null &&
                                     raw != last &&
-                                    System.currentTimeMillis() - lastAt > 1200
+                                    now - lastAt > 1000
                                 ) {
                                     last = raw
-                                    lastAt = System.currentTimeMillis()
+                                    lastAt = now
 
                                     runOnUiThread {
-                                        barcode.setText(raw)
-                                        status.text =
-                                            "Barcode captured. Verify dimensions."
-                                        parseSample(raw)
+                                        handleScannedBarcode(raw)
                                     }
                                 }
                             }
@@ -219,16 +278,58 @@ class MainActivity : AppCompatActivity() {
                     analysis
                 )
 
-                status.text = "Camera ready. Aim at barcode."
+                status.text = "Camera ready. Aim at a barcode."
 
             } catch (e: Exception) {
+                cameraStarted = false
                 status.text = "Camera error: ${e.message}"
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
+    private fun handleScannedBarcode(raw: String) {
+        val normalized = normalizeBarcode(raw)
+
+        val existing = rows.firstOrNull {
+            normalizeBarcode(it.barcode) == normalized
+        }
+
+        if (normalized.isNotEmpty() && existing != null) {
+            barcode.setText("")
+            beep()
+            status.text =
+                "DUPLICATE BARCODE — ALREADY SCANNED ON PALLET " +
+                existing.pallet.toString().padStart(2, '0') + "!"
+
+            Toast.makeText(
+                this,
+                "DUPLICATE BARCODE — NOT SAVED!",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        barcode.setText(raw)
+        parseSample(raw)
+
+        status.text = "Barcode captured. Check dimensions."
+    }
+
+    private fun normalizeBarcode(value: String): String =
+        value.filter { !it.isWhitespace() }
+
+    private fun beep() {
+        try {
+            ToneGenerator(
+                AudioManager.STREAM_NOTIFICATION,
+                100
+            ).startTone(ToneGenerator.TONE_PROP_NACK, 500)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun parseSample(raw: String) {
-        when (raw.filterNot { it.isWhitespace() }) {
+        when (normalizeBarcode(raw)) {
             "00000430900460240055" -> {
                 len.setText("90")
                 wide.setText("46")
@@ -242,10 +343,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        calc()
+        calculate()
     }
 
-    private fun calc(): Double? {
+    private fun calculate(): Double? {
         val l = len.text.toString()
             .replace(",", ".").toDoubleOrNull()
 
@@ -254,24 +355,53 @@ class MainActivity : AppCompatActivity() {
 
         val s = sheets.text.toString().toIntOrNull()
 
-        if (l == null || w == null || s == null ||
+        if (
+            l == null || w == null || s == null ||
             l <= 0 || w <= 0 || s <= 0
         ) {
             areaText.text =
-                "Area: enter valid length, width and sheets"
+                "Area: enter valid length, width and sheets."
             return null
         }
 
-        val area = l * w * s / 10000.0
+        val area = areaValue(l, w, s)
 
-        areaText.text = "Total area: %.2f m²".format(
-            Locale.US, area
-        )
+        areaText.text =
+            "Total area: ${String.format(Locale.US, "%.2f", area)} m²"
 
         return area
     }
 
     private fun save() {
+        val scanned = normalizeBarcode(barcode.text.toString())
+
+        if (scanned.isEmpty()) {
+            Toast.makeText(
+                this,
+                "Scan or enter a barcode first.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val duplicate = rows.firstOrNull {
+            normalizeBarcode(it.barcode) == scanned
+        }
+
+        if (duplicate != null) {
+            beep()
+            status.text =
+                "DUPLICATE BARCODE — ALREADY ON PALLET " +
+                duplicate.pallet.toString().padStart(2, '0') + "!"
+
+            Toast.makeText(
+                this,
+                "Duplicate barcode rejected.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
         val l = len.text.toString()
             .replace(",", ".").toDoubleOrNull()
 
@@ -279,12 +409,15 @@ class MainActivity : AppCompatActivity() {
             .replace(",", ".").toDoubleOrNull()
 
         val s = sheets.text.toString().toIntOrNull()
-        val area = calc()
+        val area = calculate()
 
-        if (l == null || w == null || s == null || area == null) {
+        if (
+            l == null || w == null || s == null ||
+            l <= 0 || w <= 0 || s <= 0 || area == null
+        ) {
             Toast.makeText(
                 this,
-                "Enter valid dimensions first",
+                "Enter valid dimensions first.",
                 Toast.LENGTH_LONG
             ).show()
             return
@@ -292,100 +425,373 @@ class MainActivity : AppCompatActivity() {
 
         rows.add(
             Row(
-                SimpleDateFormat(
+                id = System.nanoTime(),
+                pallet = currentPallet,
+                date = SimpleDateFormat(
                     "yyyy-MM-dd HH:mm:ss",
                     Locale.US
                 ).format(Date()),
-                supplier.text.toString(),
-                code.text.toString(),
-                barcode.text.toString(),
-                l,
-                w,
-                s,
-                area
+                supplier = supplier.text.toString(),
+                code = code.text.toString(),
+                barcode = barcode.text.toString(),
+                len = l,
+                wide = w,
+                sheets = s,
+                area = area
             )
         )
 
         persist()
-        updateSummary()
+        refresh()
 
         Toast.makeText(
             this,
-            "Record saved",
+            "Bundle saved to Pallet " +
+                currentPallet.toString().padStart(2, '0'),
             Toast.LENGTH_SHORT
         ).show()
 
         barcode.setText("")
         last = ""
+        status.text = "Ready for the next barcode."
+    }
+
+    private fun addPallet() {
+        val next = (pallets.maxOrNull() ?: 0) + 1
+        pallets.add(next)
+        currentPallet = next
+        persist()
+        refresh()
+
+        Toast.makeText(
+            this,
+            "Pallet ${next.toString().padStart(2, '0')} created.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun deletePallet() {
+        if (pallets.size <= 1) {
+            Toast.makeText(
+                this,
+                "You must keep at least one pallet.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val number = currentPallet.toString().padStart(2, '0')
+
+        AlertDialog.Builder(this)
+            .setTitle("Delete Pallet $number?")
+            .setMessage(
+                "This permanently deletes all records on this pallet. " +
+                    "Export your tally first if you need a copy."
+            )
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("DELETE") { _, _ ->
+                rows.removeAll { it.pallet == currentPallet }
+                pallets.remove(currentPallet)
+                currentPallet = pallets.first()
+                persist()
+                refresh()
+            }
+            .show()
+    }
+
+    private fun refresh() {
+        if (!::palletTabs.isInitialized) return
+
+        palletTabs.removeAllViews()
+
+        pallets.forEach { number ->
+            palletTabs.addView(Button(this).apply {
+                text = number.toString().padStart(2, '0')
+                isAllCaps = false
+                textSize = 16f
+
+                if (number == currentPallet) {
+                    alpha = 1.0f
+                    text = "[$text]"
+                } else {
+                    alpha = 0.65f
+                }
+
+                setOnClickListener {
+                    currentPallet = number
+                    persist()
+                    refresh()
+                }
+            })
+        }
+
+        saveButton.text =
+            "SAVE BUNDLE TO PALLET " +
+            currentPallet.toString().padStart(2, '0')
+
+        val currentRows = rows.filter { it.pallet == currentPallet }
+
+        summary.text =
+            "PALLET ${currentPallet.toString().padStart(2, '0')}\n" +
+            "Bundles: ${currentRows.size} | " +
+            "Sheets: ${currentRows.sumOf { it.sheets }} | " +
+            "Total: " + String.format(
+                Locale.US,
+                "%.2f",
+                currentRows.sumOf { it.area }
+            ) + " m²\n\n" +
+            "ALL PALLETS: ${rows.size} bundles | " +
+            "Total: " + String.format(
+                Locale.US,
+                "%.2f",
+                rows.sumOf { it.area }
+            ) + " m²"
+
+        recordsView.removeAllViews()
+
+        if (currentRows.isEmpty()) {
+            recordsView.addView(TextView(this).apply {
+                text = "No bundles saved on this pallet yet."
+                textSize = 15f
+            })
+        }
+
+        currentRows.asReversed().forEach { row ->
+            val recordButton = Button(this).apply {
+                isAllCaps = false
+                textSize = 14f
+                text =
+                    "${row.barcode}\n" +
+                    "${row.len} × ${row.wide} cm | " +
+                    "${row.sheets} sheets | " +
+                    "${String.format(Locale.US, "%.2f", row.area)} m²\n" +
+                    "Tap to view, edit or delete"
+                setOnClickListener { showRecord(row) }
+            }
+
+            recordsView.addView(recordButton)
+        }
+    }
+
+    private fun showRecord(row: Row) {
+        val lengthInput = field("Length in cm").apply {
+            setText(row.len.toString())
+        }
+
+        val widthInput = field("Width in cm").apply {
+            setText(row.wide.toString())
+        }
+
+        val sheetsInput = field("Number of sheets").apply {
+            setText(row.sheets.toString())
+        }
+
+        val supplierInput = field("Supplier").apply {
+            setText(row.supplier)
+        }
+
+        val codeInput = field("Stock / product code").apply {
+            setText(row.code)
+        }
+
+        val details = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+
+            addView(TextView(this@MainActivity).apply {
+                text =
+                    "Barcode: ${row.barcode}\n" +
+                    "Pallet: ${row.pallet.toString().padStart(2, '0')}\n" +
+                    "Date: ${row.date}"
+                textSize = 15f
+            })
+
+            addView(supplierInput)
+            addView(codeInput)
+            addView(lengthInput)
+            addView(widthInput)
+            addView(sheetsInput)
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Bundle Details")
+            .setView(details)
+            .setNeutralButton("DELETE", null)
+            .setNegativeButton("CLOSE", null)
+            .setPositiveButton("SAVE CHANGES", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+                .setOnClickListener {
+                    AlertDialog.Builder(this)
+                        .setTitle("Delete this bundle?")
+                        .setMessage(
+                            "This will remove the bundle and its " +
+                                "m² from the tally."
+                        )
+                        .setNegativeButton("CANCEL", null)
+                        .setPositiveButton("DELETE") { _, _ ->
+                            rows.removeAll { it.id == row.id }
+                            persist()
+                            refresh()
+                            dialog.dismiss()
+                        }
+                        .show()
+                }
+
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener {
+                    val l = lengthInput.text.toString()
+                        .replace(",", ".").toDoubleOrNull()
+
+                    val w = widthInput.text.toString()
+                        .replace(",", ".").toDoubleOrNull()
+
+                    val s = sheetsInput.text.toString().toIntOrNull()
+
+                    if (
+                        l == null || w == null || s == null ||
+                        l <= 0 || w <= 0 || s <= 0
+                    ) {
+                        Toast.makeText(
+                            this,
+                            "Enter valid dimensions.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        return@setOnClickListener
+                    }
+
+                    val index = rows.indexOfFirst { it.id == row.id }
+
+                    if (index >= 0) {
+                        rows[index] = row.copy(
+                            supplier = supplierInput.text.toString(),
+                            code = codeInput.text.toString(),
+                            len = l,
+                            wide = w,
+                            sheets = s,
+                            area = areaValue(l, w, s)
+                        )
+                        persist()
+                        refresh()
+                        dialog.dismiss()
+                    }
+                }
+        }
+
+        dialog.show()
     }
 
     private fun persist() {
-        val data = rows.joinToString("\n") {
+        val data = rows.joinToString("\n") { row ->
             listOf(
-                it.date,
-                it.supplier,
-                it.code,
-                it.barcode,
-                it.len,
-                it.wide,
-                it.sheets,
-                it.area
+                row.id.toString(),
+                row.pallet.toString(),
+                row.date,
+                row.supplier,
+                row.code,
+                row.barcode,
+                row.len.toString(),
+                row.wide.toString(),
+                row.sheets.toString(),
+                row.area.toString()
             ).joinToString("\t")
         }
 
-        prefs.edit().putString("data", data).apply()
+        prefs.edit()
+            .putString("data", data)
+            .putString("pallets", pallets.joinToString(","))
+            .putInt("currentPallet", currentPallet)
+            .apply()
     }
 
     private fun load() {
+        val savedPallets = prefs.getString("pallets", "") ?: ""
+
+        savedPallets.split(",")
+            .mapNotNull { it.toIntOrNull() }
+            .filter { it > 0 }
+            .forEach { pallets.add(it) }
+
         val data = prefs.getString("data", "") ?: ""
 
         data.lineSequence()
             .filter { it.isNotBlank() }
             .forEach { line ->
-                val values = line.split("\t")
+                val v = line.split("\t")
 
-                if (values.size == 8) {
-                    runCatching {
-                        rows.add(
-                            Row(
-                                values[0],
-                                values[1],
-                                values[2],
-                                values[3],
-                                values[4].toDouble(),
-                                values[5].toDouble(),
-                                values[6].toInt(),
-                                values[7].toDouble()
+                runCatching {
+                    when (v.size) {
+                        // New format
+                        10 -> {
+                            rows.add(
+                                Row(
+                                    id = v[0].toLong(),
+                                    pallet = v[1].toInt(),
+                                    date = v[2],
+                                    supplier = v[3],
+                                    code = v[4],
+                                    barcode = v[5],
+                                    len = v[6].toDouble(),
+                                    wide = v[7].toDouble(),
+                                    sheets = v[8].toInt(),
+                                    area = rounded(v[9].toDouble())
+                                )
                             )
-                        )
+                        }
+
+                        // Older app format: move existing records to Pallet 01
+                        8 -> {
+                            rows.add(
+                                Row(
+                                    id = System.nanoTime(),
+                                    pallet = 1,
+                                    date = v[0],
+                                    supplier = v[1],
+                                    code = v[2],
+                                    barcode = v[3],
+                                    len = v[4].toDouble(),
+                                    wide = v[5].toDouble(),
+                                    sheets = v[6].toInt(),
+                                    area = rounded(v[7].toDouble())
+                                )
+                            )
+                            pallets.add(1)
+                        }
                     }
                 }
             }
+
+        if (pallets.isEmpty()) pallets.add(1)
+
+        pallets.addAll(rows.map { it.pallet })
+
+        currentPallet = prefs.getInt("currentPallet", 1)
+
+        if (currentPallet !in pallets) {
+            currentPallet = pallets.first()
+        }
+
+        // Save migrated records using the new format.
+        persist()
     }
 
-    private fun updateSummary() {
-        summary.text =
-            "Saved records: ${rows.size} | " +
-            "Sheets: ${rows.sumOf { it.sheets }} | " +
-            "Total: %.2f m²".format(
-                Locale.US,
-                rows.sumOf { it.area }
-            )
-    }
-
-    private fun quote(value: String): String {
-        return "\"" + value.replace("\"", "\"\"") + "\""
-    }
+    private fun quote(value: String): String =
+        "\"" + value.replace("\"", "\"\"") + "\""
 
     private fun export() {
         val csv = buildString {
             appendLine(
-                "Date,Supplier,StockCode,Barcode," +
-                "Length_cm,Width_cm,Sheets,Total_m2"
+                "Pallet,Date,Supplier,StockCode,Barcode," +
+                    "Length_cm,Width_cm,Sheets,Total_m2"
             )
 
-            rows.forEach { row ->
+            rows.sortedWith(
+                compareBy<Row> { it.pallet }.thenBy { it.date }
+            ).forEach { row ->
                 val values = listOf(
+                    row.pallet.toString().padStart(2, '0'),
                     row.date,
                     row.supplier,
                     row.code,
@@ -393,13 +799,46 @@ class MainActivity : AppCompatActivity() {
                     row.len.toString(),
                     row.wide.toString(),
                     row.sheets.toString(),
-                    String.format(Locale.US, "%.4f", row.area)
+                    String.format(Locale.US, "%.2f", row.area)
                 )
 
-                appendLine(values.joinToString(",") {
-                    quote(it)
-                })
+                appendLine(values.joinToString(",") { quote(it) })
             }
+
+            appendLine()
+            appendLine("Pallet,BundleCount,SheetCount,Total_m2")
+
+            pallets.forEach { palletNumber ->
+                val palletRows = rows.filter {
+                    it.pallet == palletNumber
+                }
+
+                appendLine(
+                    listOf(
+                        palletNumber.toString().padStart(2, '0'),
+                        palletRows.size.toString(),
+                        palletRows.sumOf { it.sheets }.toString(),
+                        String.format(
+                            Locale.US,
+                            "%.2f",
+                            palletRows.sumOf { it.area }
+                        )
+                    ).joinToString(",")
+                )
+            }
+
+            appendLine(
+                listOf(
+                    "ALL PALLETS",
+                    rows.size.toString(),
+                    rows.sumOf { it.sheets }.toString(),
+                    String.format(
+                        Locale.US,
+                        "%.2f",
+                        rows.sumOf { it.area }
+                    )
+                ).joinToString(",")
+            )
         }
 
         try {
@@ -418,7 +857,7 @@ class MainActivity : AppCompatActivity() {
             val uri = contentResolver.insert(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI,
                 values
-            ) ?: error("Could not create file")
+            ) ?: error("Could not create CSV file")
 
             contentResolver.openOutputStream(uri)
                 ?.bufferedWriter()
@@ -426,7 +865,7 @@ class MainActivity : AppCompatActivity() {
 
             Toast.makeText(
                 this,
-                "CSV saved in Downloads",
+                "CSV exported to Downloads.",
                 Toast.LENGTH_LONG
             ).show()
 
