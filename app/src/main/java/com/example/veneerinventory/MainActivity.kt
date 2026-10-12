@@ -53,7 +53,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var palletTabs: LinearLayout
     private lateinit var recordsView: LinearLayout
     private lateinit var saveButton: Button
-
+    private lateinit var scanButton: Button
+    @Volatile private var scanArmed = false
+    private var toneGenerator: ToneGenerator? = null
+    
     private val rows = mutableListOf<Row>()
     private val pallets = sortedSetOf(1)
     private var currentPallet = 1
@@ -79,8 +82,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         load()
-        ui()
-        refresh()
+toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+ui()
+refresh()
 
         if (
             ContextCompat.checkSelfPermission(
@@ -116,19 +120,35 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(status)
 
-        supplier = field("Supplier (optional)")
-        code = field("Stock / product code (optional)")
-        barcode = field("Scanned barcode")
-        len = field("Length in cm")
-        wide = field("Width in cm")
-        sheets = field("Number of sheets")
+scanButton = Button(this).apply {
+text = "SCAN BARCODE"
+textSize = 18f
+setOnClickListener {
+scanArmed = true
+last = ""
+lastAt = 0L
+barcode.setText("")
+status.text = "SCANNING... POINT CAMERA AT BARCODE."
+scanButton.text = "SCANNING... TAP TO TRY AGAIN"
+isEnabled = true
+}
+}
+root.addView(scanButton)
 
-        listOf(supplier, code, barcode, len, wide, sheets)
-            .forEach { root.addView(it) }
+supplier = field("Supplier (optional)")
+code = field("Stock / product code (optional)")
+barcode = field("Scanned barcode")
+len = field("Length in cm")
+wide = field("Width in cm")
+sheets = field("Number of sheets")
 
-        areaText = TextView(this).apply {
-            textSize = 18f
-        }
+listOf(supplier, code, barcode, len, wide, sheets)
+.forEach { root.addView(it) }
+
+areaText = TextView(this).apply {
+textSize = 18f
+}
+
         root.addView(areaText)
 
         root.addView(Button(this).apply {
@@ -248,20 +268,21 @@ class MainActivity : AppCompatActivity() {
                                     !it.rawValue.isNullOrBlank()
                                 }?.rawValue
 
-                                val now = System.currentTimeMillis()
+                                if (scanArmed && raw != null) {
+scanArmed = false
+last = raw
+lastAt = System.currentTimeMillis()
 
-                                if (
-                                    raw != null &&
-                                    raw != last &&
-                                    now - lastAt > 1000
-                                ) {
-                                    last = raw
-                                    lastAt = now
+```
+runOnUiThread {
+    scanButton.isEnabled = true
+    scanButton.text = "SCAN BARCODE"
+    handleScannedBarcode(raw)
+}
+```
 
-                                    runOnUiThread {
-                                        handleScannedBarcode(raw)
-                                    }
-                                }
+}
+
                             }
                             .addOnCompleteListener {
                                 proxy.close()
@@ -328,20 +349,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun parseSample(raw: String) {
-        when (normalizeBarcode(raw)) {
-            "00000430900460240055" -> {
-                len.setText("90")
-                wide.setText("46")
-                sheets.setText("24")
-            }
+    private fun beep() {
+try {
+if (toneGenerator == null) {
+toneGenerator = ToneGenerator(
+AudioManager.STREAM_MUSIC,
+100
+)
+}
 
-            "4201153000424040025" -> {
-                len.setText("40")
-                wide.setText("25")
-                sheets.setText("24")
-            }
-        }
+```
+    toneGenerator?.startTone(
+        ToneGenerator.TONE_PROP_NACK,
+        700
+    )
+} catch (_: Exception) {
+    Toast.makeText(
+        this,
+        "DUPLICATE BARCODE — NOT SAVED!",
+        Toast.LENGTH_LONG
+    ).show()
+}
+```
+
+}
+
 
         calculate()
     }
@@ -878,8 +910,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        executor.shutdown()
-    }
+   override fun onDestroy() {
+toneGenerator?.release()
+toneGenerator = null
+executor.shutdown()
+super.onDestroy()
+}
+
 }
