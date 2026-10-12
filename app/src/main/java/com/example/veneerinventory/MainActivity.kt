@@ -268,19 +268,15 @@ textSize = 18f
                                     !it.rawValue.isNullOrBlank()
                                 }?.rawValue
 
-                                if (scanArmed && raw != null) {
-scanArmed = false
-last = raw
-lastAt = System.currentTimeMillis()
+                              if (scanArmed && raw != null) {
+    scanArmed = false
+    last = raw
+    lastAt = System.currentTimeMillis()
 
-```
-runOnUiThread {
-    scanButton.isEnabled = true
-    scanButton.text = "SCAN BARCODE"
-    handleScannedBarcode(raw)
-}
-```
-
+    runOnUiThread {
+        scanButton.text = "SCAN BARCODE"
+        handleScannedBarcode(raw)
+    }
 }
 
                             }
@@ -309,75 +305,77 @@ runOnUiThread {
     }
 
     private fun handleScannedBarcode(raw: String) {
-        val normalized = normalizeBarcode(raw)
+    val normalized = normalizeBarcode(raw)
 
-        val existing = rows.firstOrNull {
-            normalizeBarcode(it.barcode) == normalized
-        }
-
-        if (normalized.isNotEmpty() && existing != null) {
-            barcode.setText("")
-            beep()
-            status.text =
-                "DUPLICATE BARCODE — ALREADY SCANNED ON PALLET " +
-                existing.pallet.toString().padStart(2, '0') + "!"
-
-            Toast.makeText(
-                this,
-                "DUPLICATE BARCODE — NOT SAVED!",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        barcode.setText(raw)
-        parseSample(raw)
-
-        status.text = "Barcode captured. Check dimensions."
+    val existing = rows.firstOrNull {
+        normalizeBarcode(it.barcode) == normalized
     }
 
-    private fun normalizeBarcode(value: String): String =
-        value.filter { !it.isWhitespace() }
+    if (normalized.isNotEmpty() && existing != null) {
+        barcode.setText("")
+        beep()
 
-    private fun beep() {
-        try {
-            ToneGenerator(
-                AudioManager.STREAM_NOTIFICATION,
+        status.text = "DUPLICATE BARCODE — ALREADY SCANNED ON PALLET " +
+            existing.pallet.toString().padStart(2, '0') + "!"
+
+        Toast.makeText(
+            this,
+            "DUPLICATE BARCODE — NOT SAVED!",
+            Toast.LENGTH_LONG
+        ).show()
+
+        return
+    }
+
+    barcode.setText(raw)
+    parseSample(raw)
+
+    status.text = "Barcode captured. Check dimensions, then save the bundle."
+}
+
+private fun normalizeBarcode(value: String): String {
+    return value.filter { !it.isWhitespace() }
+}
+
+private fun beep() {
+    try {
+        if (toneGenerator == null) {
+            toneGenerator = ToneGenerator(
+                AudioManager.STREAM_MUSIC,
                 100
-            ).startTone(ToneGenerator.TONE_PROP_NACK, 500)
-        } catch (_: Exception) {
+            )
+        }
+
+        toneGenerator?.startTone(
+            ToneGenerator.TONE_PROP_NACK,
+            700
+        )
+    } catch (_: Exception) {
+        Toast.makeText(
+            this,
+            "DUPLICATE BARCODE — NOT SAVED!",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+}
+
+private fun parseSample(raw: String) {
+    when (normalizeBarcode(raw)) {
+        "00000430900460240055" -> {
+            len.setText("90")
+            wide.setText("46")
+            sheets.setText("24")
+        }
+
+        "4201153000424040025" -> {
+            len.setText("40")
+            wide.setText("25")
+            sheets.setText("24")
         }
     }
 
-    private fun beep() {
-try {
-if (toneGenerator == null) {
-toneGenerator = ToneGenerator(
-AudioManager.STREAM_MUSIC,
-100
-)
+    calculate()
 }
-
-```
-    toneGenerator?.startTone(
-        ToneGenerator.TONE_PROP_NACK,
-        700
-    )
-} catch (_: Exception) {
-    Toast.makeText(
-        this,
-        "DUPLICATE BARCODE — NOT SAVED!",
-        Toast.LENGTH_LONG
-    ).show()
-}
-```
-
-}
-
-
-        calculate()
-    }
-
     private fun calculate(): Double? {
         val l = len.text.toString()
             .replace(",", ".").toDoubleOrNull()
