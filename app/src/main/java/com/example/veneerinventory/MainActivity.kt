@@ -345,7 +345,7 @@ textSize = 18f
         }, ContextCompat.getMainExecutor(this))
     }
 
-   ```kotlin
+   
 private fun handleScannedBarcode(raw: String) {
     val normalized = normalizeBarcode(raw)
 
