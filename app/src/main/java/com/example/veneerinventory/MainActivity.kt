@@ -345,7 +345,8 @@ textSize = 18f
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun handleScannedBarcode(raw: String) {
+   ```kotlin
+private fun handleScannedBarcode(raw: String) {
     val normalized = normalizeBarcode(raw)
 
     val existing = rows.firstOrNull {
@@ -371,8 +372,17 @@ textSize = 18f
     barcode.setText(raw)
     parseSample(raw)
 
+    // Play a confirmation sound for a successful scan.
+    try {
+        toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP, 200)
+    } catch (_: Exception) {
+        // Continue scanning even if sound is unavailable.
+    }
+
     status.text = "Barcode captured. Check dimensions, then save the bundle."
 }
+
+
 
 private fun normalizeBarcode(value: String): String {
     return value.filter { !it.isWhitespace() }
