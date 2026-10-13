@@ -1013,13 +1013,11 @@ return area
         }
     }
 
-  override fun onDestroy() {
-toneGenerator?.release()
-toneGenerator = null
-textRecognizer.close()
-executor.shutdown()
-super.onDestroy()
-}
-
-
+     override fun onDestroy() {
+        toneGenerator?.release()
+        toneGenerator = null
+        textRecognizer.close()
+        executor.shutdown()
+        super.onDestroy()
+    }
 }
