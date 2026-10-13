@@ -7,7 +7,6 @@ android {
 namespace = "com.example.veneerinventory"
 compileSdk = 35
 
-```
 defaultConfig {
     applicationId = "com.example.veneerinventory"
     minSdk = 23
@@ -24,7 +23,6 @@ compileOptions {
 kotlinOptions {
     jvmTarget = "17"
 }
-```
 
 }
 
@@ -34,7 +32,6 @@ implementation("androidx.appcompat:appcompat:1.7.0")
 implementation("com.google.android.material:material:1.12.0")
 implementation("androidx.activity:activity-ktx:1.9.3")
 
-```
 implementation("androidx.camera:camera-core:1.4.1")
 implementation("androidx.camera:camera-camera2:1.4.1")
 implementation("androidx.camera:camera-lifecycle:1.4.1")
@@ -42,6 +39,5 @@ implementation("androidx.camera:camera-view:1.4.1")
 
 implementation("com.google.mlkit:barcode-scanning:17.3.0")
 implementation("com.google.mlkit:text-recognition:16.0.1")
-```
 
 }
