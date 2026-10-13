@@ -19,11 +19,10 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
@@ -468,27 +467,36 @@ private fun parseSample(raw: String) {
 
     return true
 }
-    private fun calculate(): Double? {
-val l = len.text.toString()
-.replace(",", ".")
-.toDoubleOrNull()
+   ```kotlin
+private fun calculate(): Double? {
+    val l = len.text.toString()
+        .replace(",", ".")
+        .toDoubleOrNull()
 
-```
-val w = wide.text.toString()
-    .replace(",", ".")
-    .toDoubleOrNull()
+    val w = wide.text.toString()
+        .replace(",", ".")
+        .toDoubleOrNull()
 
-val s = sheets.text.toString()
-    .toIntOrNull()
+    val s = sheets.text.toString()
+        .toIntOrNull()
 
-if (
-    l == null || w == null || s == null ||
-    l <= 0 || w <= 0 || s <= 0
-) {
+    if (
+        l == null || w == null || s == null ||
+        l <= 0 || w <= 0 || s <= 0
+    ) {
+        areaText.text =
+            "Area: enter valid length, width and sheets."
+        return null
+    }
+
+    val area = areaValue(l, w, s)
+
     areaText.text =
-        "Area: enter valid length, width and sheets."
-    return null
+        "Total area: ${String.format(Locale.US, "%.2f", area)} m²"
+
+    return area
 }
+
 
 val area = areaValue(l, w, s)
 
@@ -496,7 +504,6 @@ areaText.text =
     "Total area: ${String.format(Locale.US, "%.2f", area)} m²"
 
 return area
-```
 
 }
 
