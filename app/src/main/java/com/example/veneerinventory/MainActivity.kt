@@ -19,6 +19,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -56,8 +58,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var recordsView: LinearLayout
     private lateinit var saveButton: Button
     private lateinit var scanButton: Button
-    @Volatile private var scanArmed = false
-    private var toneGenerator: ToneGenerator? = null
+   @Volatile private var scanArmed = false
+  private var toneGenerator: ToneGenerator? = null
+
+
+   private val textRecognizer by lazy {
+       TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+}
     
     private val rows = mutableListOf<Row>()
     private val pallets = sortedSetOf(1)
@@ -252,41 +259,74 @@ textSize = 18f
                     .build()
 
                 val scanner = BarcodeScanning.getClient()
+                
+
 
                 analysis.setAnalyzer(executor) { proxy ->
-                    val mediaImage = proxy.image
+    val mediaImage = proxy.image
 
-                    if (mediaImage == null) {
+    if (mediaImage == null) {
+        proxy.close()
+    } else {
+        val input = InputImage.fromMediaImage(
+            mediaImage,
+            proxy.imageInfo.rotationDegrees
+        )
+
+        val barcodeTask = scanner.process(input)
+        val textTask = textRecognizer.process(input)
+
+        com.google.android.gms.tasks.Tasks
+            .whenAllComplete(barcodeTask, textTask)
+            .addOnCompleteListener {
+                val raw = if (barcodeTask.isSuccessful) {
+                    barcodeTask.result.firstOrNull {
+                        !it.rawValue.isNullOrBlank()
+                    }?.rawValue
+                } else {
+                    null
+                }
+
+                val recognizedText = if (textTask.isSuccessful) {
+                    textTask.result.text
+                } else {
+                    ""
+                }
+
+                runOnUiThread {
+                    try {
+                        if (scanArmed) {
+                            var captured = false
+
+                            if (raw != null) {
+                                scanArmed = false
+                                last = raw
+                                lastAt = System.currentTimeMillis()
+
+                                scanButton.text = "SCAN BARCODE"
+                                handleScannedBarcode(raw)
+
+                                captured = true
+                            }
+
+                            if (parseLabelText(recognizedText)) {
+                                scanArmed = false
+                                scanButton.text = "SCAN BARCODE"
+                                captured = true
+                            }
+
+                            if (!captured) {
+                                status.text =
+                                    "Scanning barcode and veneer label..."
+                            }
+                        }
+                    } finally {
                         proxy.close()
-                    } else {
-                        val input = InputImage.fromMediaImage(
-                            mediaImage,
-                            proxy.imageInfo.rotationDegrees
-                        )
-
-                        scanner.process(input)
-                            .addOnSuccessListener { results ->
-                                val raw = results.firstOrNull {
-                                    !it.rawValue.isNullOrBlank()
-                                }?.rawValue
-
-                              if (scanArmed && raw != null) {
-    scanArmed = false
-    last = raw
-    lastAt = System.currentTimeMillis()
-
-    runOnUiThread {
-        scanButton.text = "SCAN BARCODE"
-        handleScannedBarcode(raw)
-    }
-}
-
-                            }
-                            .addOnCompleteListener {
-                                proxy.close()
-                            }
                     }
                 }
+            }
+    }
+}
 
                 provider.unbindAll()
 
@@ -378,31 +418,87 @@ private fun parseSample(raw: String) {
 
     calculate()
 }
-    private fun calculate(): Double? {
-        val l = len.text.toString()
-            .replace(",", ".").toDoubleOrNull()
+    private fun parseLabelText(text: String): Boolean {
+    fun findValue(labelPattern: String): String? {
+        val pattern = Regex(
+            """(?:\b(?:$labelPattern)\b\s*[:=]?\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*\b(?:$labelPattern)\b)""",
+            RegexOption.IGNORE_CASE
+        )
 
-        val w = wide.text.toString()
-            .replace(",", ".").toDoubleOrNull()
+        val match = pattern.find(text) ?: return null
 
-        val s = sheets.text.toString().toIntOrNull()
-
-        if (
-            l == null || w == null || s == null ||
-            l <= 0 || w <= 0 || s <= 0
-        ) {
-            areaText.text =
-                "Area: enter valid length, width and sheets."
-            return null
-        }
-
-        val area = areaValue(l, w, s)
-
-        areaText.text =
-            "Total area: ${String.format(Locale.US, "%.2f", area)} m²"
-
-        return area
+        return (match.groups[1]?.value ?: match.groups[2]?.value)
+            ?.replace(",", ".")
     }
+
+    val lengthValue = findValue("LEN")
+    val widthValue = findValue("WIDE")
+    val sheetsValue = findValue("SHT|SHEETS")
+
+    if (
+        lengthValue == null ||
+        widthValue == null ||
+        sheetsValue == null
+    ) {
+        return false
+    }
+
+    val lengthNumber = lengthValue.toDoubleOrNull()
+    val widthNumber = widthValue.toDoubleOrNull()
+    val sheetsNumber = sheetsValue.toDoubleOrNull()?.toInt()
+
+    if (
+        lengthNumber == null ||
+        widthNumber == null ||
+        sheetsNumber == null ||
+        lengthNumber <= 0 ||
+        widthNumber <= 0 ||
+        sheetsNumber <= 0
+    ) {
+        return false
+    }
+
+    len.setText(lengthValue)
+    wide.setText(widthValue)
+    sheets.setText(sheetsNumber.toString())
+
+    calculate()
+
+    status.text = "Label read successfully. Check dimensions, then save."
+
+    return true
+}
+    private fun calculate(): Double? {
+val l = len.text.toString()
+.replace(",", ".")
+.toDoubleOrNull()
+
+```
+val w = wide.text.toString()
+    .replace(",", ".")
+    .toDoubleOrNull()
+
+val s = sheets.text.toString()
+    .toIntOrNull()
+
+if (
+    l == null || w == null || s == null ||
+    l <= 0 || w <= 0 || s <= 0
+) {
+    areaText.text =
+        "Area: enter valid length, width and sheets."
+    return null
+}
+
+val area = areaValue(l, w, s)
+
+areaText.text =
+    "Total area: ${String.format(Locale.US, "%.2f", area)} m²"
+
+return area
+```
+
+}
 
     private fun save() {
         val scanned = normalizeBarcode(barcode.text.toString())
@@ -910,11 +1006,13 @@ private fun parseSample(raw: String) {
         }
     }
 
-   override fun onDestroy() {
+  override fun onDestroy() {
 toneGenerator?.release()
 toneGenerator = null
+textRecognizer.close()
 executor.shutdown()
 super.onDestroy()
 }
+
 
 }
